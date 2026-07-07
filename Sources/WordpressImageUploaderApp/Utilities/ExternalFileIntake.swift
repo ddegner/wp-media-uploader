@@ -32,6 +32,30 @@ final class DockFileOpenDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let runner = JobRunner.runningInstance else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Quit and stop the upload?"
+        alert.informativeText = "An upload is in progress. Quitting now will stop it; files that already finished stay on the server."
+        alert.addButton(withTitle: "Stop Upload and Quit")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+
+        // Cancel, then wait (bounded) for the transport to tear down its
+        // ssh/rsync children so quitting doesn't orphan them.
+        runner.cancel()
+        Task { @MainActor in
+            let deadline = Date.now.addingTimeInterval(5)
+            while runner.isRunning, Date.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         Task { @MainActor in
             ExternalFileIntake.shared.enqueue(urls)

@@ -63,6 +63,14 @@ final class JobRunner {
     private var jobTask: Task<Void, Error>?
     private var logLineCounter = 0
 
+    // Weak registry so the app delegate can find a running upload at quit
+    // time without plumbing the runner out of the SwiftUI view tree.
+    private static let registry = NSHashTable<JobRunner>.weakObjects()
+
+    static var runningInstance: JobRunner? {
+        registry.allObjects.first { $0.isRunning }
+    }
+
     static func requestCompletionNotificationAuthorizationIfNeeded() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             guard settings.authorizationStatus == .notDetermined else { return }
@@ -79,6 +87,7 @@ final class JobRunner {
         recoverInterruptedJobs()
         self.currentJob = nil
         self.logLines = []
+        Self.registry.add(self)
     }
 
     var canRetryFailed: Bool {
