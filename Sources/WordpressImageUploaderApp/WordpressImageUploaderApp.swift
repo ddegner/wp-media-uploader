@@ -291,10 +291,6 @@ struct WordpressMediaUploaderApp: App {
                 }
             }
 
-            CommandMenu("Notifications") {
-                Toggle("Play Sound on Completion", isOn: $playCompletionSoundOnCompletion)
-                Toggle("Show macOS Notification on Completion", isOn: $showCompletionNotificationOnCompletion)
-            }
         }
 
         Settings {

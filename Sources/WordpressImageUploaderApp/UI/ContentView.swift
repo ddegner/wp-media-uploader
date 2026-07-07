@@ -94,6 +94,31 @@ private struct FileThumbnailIcon: View {
     }
 }
 
+// Queue storage lives in a class so queue edits can register with
+// NSUndoManager (which needs an object target that outlives the view value).
+@MainActor
+@Observable
+private final class FileQueue {
+    var items: [FileItem] = []
+
+    // Snapshot-based undo: registrations made while undoing become redo
+    // (NSUndoManager's redo-during-undo rule), so one recursive helper
+    // covers both directions.
+    func setItems(_ newItems: [FileItem], actionName: String, undoManager: UndoManager?) {
+        let oldItems = items
+        guard newItems != oldItems else { return }
+        items = newItems
+
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { queue in
+            MainActor.assumeIsolated {
+                queue.setItems(oldItems, actionName: actionName, undoManager: undoManager)
+            }
+        }
+        undoManager.setActionName(actionName)
+    }
+}
+
 struct ContentView: View {
     private static let profilesDrawerMinWidth: CGFloat = 200
     private static let profilesDrawerWidth: CGFloat = 260
@@ -155,8 +180,9 @@ struct ContentView: View {
     @Bindable var externalFileIntake: ExternalFileIntake
 
     @Environment(\.appearsActive) private var appearsActive
+    @Environment(\.undoManager) private var undoManager
 
-    @State private var droppedFileItems: [FileItem] = []
+    @State private var fileQueue = FileQueue()
     @State private var isDropTargeted = false
     @State private var selectedFileRowIDs: Set<String> = []
     @State private var profileEditorDraft: ProfileEditorDraft?
@@ -174,6 +200,10 @@ struct ContentView: View {
     @State private var quickLookURLs: [URL] = []
     @State private var quickLookAccessTokens: [SecurityScopedFileAccess] = []
 
+
+    private var droppedFileItems: [FileItem] {
+        fileQueue.items
+    }
 
     private var selectedProfile: ServerProfile? {
         guard let selectedProfileId else { return nil }
@@ -672,22 +702,27 @@ struct ContentView: View {
             if jobRunner.logLines.isEmpty {
                 operationsEmptyState("No job selected")
             } else {
+                // One Text for the whole visible log so selection works
+                // continuously across lines.
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(jobRunner.logLines.suffix(Self.visibleLogLineLimit)) { entry in
-                            Text(entry.text)
-                                .font(.system(size: 10, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
+                    Text(visibleLogText)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
                 }
                 .defaultScrollAnchor(.bottom)
             }
         }
         .frame(minHeight: 80)
+    }
+
+    private var visibleLogText: String {
+        jobRunner.logLines
+            .suffix(Self.visibleLogLineLimit)
+            .map(\.text)
+            .joined(separator: "\n")
     }
 
     private var operationsInlineMessage: String? {
@@ -1263,14 +1298,16 @@ struct ContentView: View {
         let imageFiles = resolveImageFileURLs(from: urls)
         guard !imageFiles.isEmpty else { return }
 
-        var existing = Set(droppedFileItems.map { $0.localURL.standardizedFileURL.path })
+        var items = fileQueue.items
+        var existing = Set(items.map { $0.localURL.standardizedFileURL.path })
         for url in imageFiles {
             let key = url.standardizedFileURL.path
             guard existing.insert(key).inserted else { continue }
             let bookmarkData = try? SecurityScopedFileAccess.bookmarkData(for: url)
             guard let item = FileItem.fromURL(url, bookmarkData: bookmarkData) else { continue }
-            droppedFileItems.append(item)
+            items.append(item)
         }
+        fileQueue.setItems(items, actionName: "Add Files", undoManager: undoManager)
         pruneFileSelection()
     }
 
@@ -1285,7 +1322,7 @@ struct ContentView: View {
 
     private func clearAllFiles() {
         guard !jobRunner.isRunning else { return }
-        droppedFileItems.removeAll()
+        fileQueue.setItems([], actionName: "Reset Queue", undoManager: undoManager)
         selectedFileRowIDs.removeAll()
         jobRunner.currentJob = nil
     }
@@ -1297,7 +1334,10 @@ struct ContentView: View {
 
         jobRunner.start(profile: profile, fileItems: queued)
         if jobRunner.isRunning {
-            droppedFileItems.removeAll()
+            // The queued files now belong to the job; clearing the queue is
+            // not undoable, and stale queue undos would re-add duplicates.
+            fileQueue.items = []
+            undoManager?.removeAllActions(withTarget: fileQueue)
             selectedFileRowIDs.removeAll()
             if isOperationsDrawerVisible {
                 selectOperationsPane(.activeJob)
@@ -1353,7 +1393,9 @@ struct ContentView: View {
     }
 
     private func moveQueuedFiles(from source: IndexSet, to destination: Int) {
-        droppedFileItems.move(fromOffsets: source, toOffset: destination)
+        var items = fileQueue.items
+        items.move(fromOffsets: source, toOffset: destination)
+        fileQueue.setItems(items, actionName: "Move Files", undoManager: undoManager)
     }
 
     private func deleteQueuedFiles(forRowIDs rowIDs: Set<String>) {
@@ -1369,7 +1411,9 @@ struct ContentView: View {
         )
         guard !queuedItemIDs.isEmpty else { return }
 
-        droppedFileItems.removeAll { queuedItemIDs.contains($0.id) }
+        var items = fileQueue.items
+        items.removeAll { queuedItemIDs.contains($0.id) }
+        fileQueue.setItems(items, actionName: "Delete Files", undoManager: undoManager)
         selectedFileRowIDs.subtract(queuedRowIDs)
         pruneFileSelection()
     }
@@ -1391,13 +1435,9 @@ struct ContentView: View {
     }
 
     private func copyVisibleLog() {
-        let text = jobRunner.logLines
-            .suffix(Self.visibleLogLineLimit)
-            .map { $0.text }
-            .joined(separator: "\n")
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        pasteboard.setString(visibleLogText, forType: .string)
     }
 
     @MainActor
