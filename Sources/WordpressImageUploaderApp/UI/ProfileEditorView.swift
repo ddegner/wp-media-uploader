@@ -66,6 +66,7 @@ struct ProfileEditorView: View {
                 return
             }
             profile.keyPath = url.path
+            profile.keyBookmarkData = try? SecurityScopedFileAccess.bookmarkData(for: url)
         }
         .frame(width: 720, height: 760)
         .alert("Save Error", isPresented: Binding(
@@ -103,7 +104,10 @@ struct ProfileEditorView: View {
                 HStack {
                     TextField("Optional", text: Binding(
                         get: { profile.keyPath ?? "" },
-                        set: { profile.keyPath = trimmed($0).isEmpty ? nil : $0 }
+                        set: {
+                            profile.keyPath = trimmed($0).isEmpty ? nil : $0
+                            profile.keyBookmarkData = nil
+                        }
                     ))
                     .font(.body.monospaced())
 

@@ -36,86 +36,27 @@ enum CommandRunnerError: Error, LocalizedError {
     }
 }
 
-private actor OutputCollector {
-    private var stdoutBuffer = ""
-    private var stderrBuffer = ""
-    private var stdoutLines: [String] = []
-    private var stderrLines: [String] = []
+private actor ProcessTermination {
+    private var exitCode: Int32?
+    private var continuations: [CheckedContinuation<Int32, Never>] = []
 
-    private let onLine: (@Sendable (CommandOutputStream, String) -> Void)?
-
-    init(onLine: (@Sendable (CommandOutputStream, String) -> Void)?) {
-        self.onLine = onLine
-    }
-
-    func consume(stream: CommandOutputStream, data: Data) {
-        guard !data.isEmpty else { return }
-
-        let chunk = String(decoding: data, as: UTF8.self)
-        let linesToEmit: [(CommandOutputStream, String)]
-        
-        switch stream {
-        case .stdout:
-            stdoutBuffer.append(chunk)
-            var lines: [(CommandOutputStream, String)] = []
-            while let range = stdoutBuffer.range(of: "\n") {
-                let line = String(stdoutBuffer[..<range.lowerBound]).trimmingCharacters(in: .newlines)
-                stdoutBuffer = String(stdoutBuffer[range.upperBound...])
-                if !line.isEmpty {
-                    stdoutLines.append(line)
-                    lines.append((.stdout, line))
-                }
-            }
-            linesToEmit = lines
-        case .stderr:
-            stderrBuffer.append(chunk)
-            var lines: [(CommandOutputStream, String)] = []
-            while let range = stderrBuffer.range(of: "\n") {
-                let line = String(stderrBuffer[..<range.lowerBound]).trimmingCharacters(in: .newlines)
-                stderrBuffer = String(stderrBuffer[range.upperBound...])
-                if !line.isEmpty {
-                    stderrLines.append(line)
-                    lines.append((.stderr, line))
-                }
-            }
-            linesToEmit = lines
-        }
-
-        // Emit lines outside of the actor to avoid potential deadlocks
-        Task {
-            for (stream, line) in linesToEmit {
-                onLine?(stream, line)
-            }
+    func finish(_ code: Int32) {
+        guard exitCode == nil else { return }
+        exitCode = code
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume(returning: code)
         }
     }
 
-    func finalize() -> (stdout: [String], stderr: [String]) {
-        var linesToEmit: [(CommandOutputStream, String)] = []
-        
-        let stdoutTail = stdoutBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !stdoutTail.isEmpty {
-            stdoutLines.append(stdoutTail)
-            linesToEmit.append((.stdout, stdoutTail))
-            stdoutBuffer = ""
+    func wait() async -> Int32 {
+        if let exitCode {
+            return exitCode
         }
-
-        let stderrTail = stderrBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !stderrTail.isEmpty {
-            stderrLines.append(stderrTail)
-            linesToEmit.append((.stderr, stderrTail))
-            stderrBuffer = ""
+        return await withCheckedContinuation { continuation in
+            continuations.append(continuation)
         }
-
-        let result = (stdoutLines, stderrLines)
-
-        // Emit lines outside of the actor to avoid potential deadlocks
-        Task {
-            for (stream, line) in linesToEmit {
-                onLine?(stream, line)
-            }
-        }
-        
-        return result
     }
 }
 
@@ -142,37 +83,10 @@ actor CommandRunner {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-
-        let stdoutHandle = stdoutPipe.fileHandleForReading
-        let stderrHandle = stderrPipe.fileHandleForReading
-        
-        // Ensure file handles are always closed
-        defer {
-            try? stdoutHandle.close()
-            try? stderrHandle.close()
-        }
-
-        let collector = OutputCollector(onLine: onLine)
-
-        stdoutHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                return
-            }
+        let termination = ProcessTermination()
+        process.terminationHandler = { finished in
             Task {
-                await collector.consume(stream: .stdout, data: data)
-            }
-        }
-
-        stderrHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                return
-            }
-            Task {
-                await collector.consume(stream: .stderr, data: data)
+                await termination.finish(finished.terminationStatus)
             }
         }
 
@@ -180,41 +94,59 @@ actor CommandRunner {
         activeProcesses[processID] = process
         defer { activeProcesses[processID] = nil }
 
-        var launchError: String?
-        let exitCode = await withCheckedContinuation { (continuation: CheckedContinuation<Int32, Never>) in
-            process.terminationHandler = { finished in
-                continuation.resume(returning: finished.terminationStatus)
-            }
-
-            do {
-                try process.run()
-            } catch {
-                launchError = error.localizedDescription
-                continuation.resume(returning: Int32.min)
-            }
+        do {
+            try process.run()
+        } catch {
+            throw CommandRunnerError.launchFailed(error.localizedDescription)
         }
 
-        // Clear handlers before checking exit code or reading remaining data
-        stdoutHandle.readabilityHandler = nil
-        stderrHandle.readabilityHandler = nil
+        return try await withTaskCancellationHandler {
+            // Drain both pipes concurrently using structured async I/O.
+            // Each sequence reaches EOF after the process exits and closes
+            // its write ends, so no blocking calls or readabilityHandler races.
+            async let stdoutResult = Self.collectLines(
+                from: stdoutPipe.fileHandleForReading, stream: .stdout, onLine: onLine
+            )
+            async let stderrResult = Self.collectLines(
+                from: stderrPipe.fileHandleForReading, stream: .stderr, onLine: onLine
+            )
+            async let exitCodeResult = termination.wait()
 
-        if exitCode == Int32.min {
-            throw CommandRunnerError.launchFailed(launchError ?? spec.displayName)
+            let stdoutLines = try await stdoutResult
+            let stderrLines = try await stderrResult
+            let exitCode = await exitCodeResult
+
+            try Task.checkCancellation()
+            return CommandResult(
+                exitCode: exitCode,
+                stdoutLines: stdoutLines,
+                stderrLines: stderrLines
+            )
+        } onCancel: {
+            process.terminate()
         }
-
-        // Drain any remaining data that arrived after readabilityHandler was cleared
-        let remainingStdout = stdoutHandle.readDataToEndOfFile()
-        let remainingStderr = stderrHandle.readDataToEndOfFile()
-        await collector.consume(stream: .stdout, data: remainingStdout)
-        await collector.consume(stream: .stderr, data: remainingStderr)
-
-        let lines = await collector.finalize()
-        return CommandResult(exitCode: exitCode, stdoutLines: lines.stdout, stderrLines: lines.stderr)
     }
 
     func cancelActiveProcess() {
         for process in activeProcesses.values {
             process.terminate()
         }
+    }
+
+    /// Reads complete lines from a file handle using async byte sequences.
+    /// Returns when the handle reaches EOF (i.e. the process has exited).
+    private nonisolated static func collectLines(
+        from handle: FileHandle,
+        stream: CommandOutputStream,
+        onLine: (@Sendable (CommandOutputStream, String) -> Void)?
+    ) async throws -> [String] {
+        var lines: [String] = []
+        for try await line in handle.bytes.lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            lines.append(trimmed)
+            onLine?(stream, trimmed)
+        }
+        return lines
     }
 }

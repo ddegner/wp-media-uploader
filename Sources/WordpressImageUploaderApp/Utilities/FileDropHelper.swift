@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
+@MainActor
 func loadFileURLs(from providers: [NSItemProvider]) async -> [URL] {
     var urls: [URL] = []
 
@@ -32,6 +33,7 @@ func resolveImageFileURLs(from urls: [URL]) -> [URL] {
     return uniqueURLs
 }
 
+@MainActor
 private func loadSingleURL(from provider: NSItemProvider) async -> URL? {
     let typeIdentifier = UTType.fileURL.identifier
 

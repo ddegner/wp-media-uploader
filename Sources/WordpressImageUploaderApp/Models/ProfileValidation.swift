@@ -46,10 +46,22 @@ enum ProfileValidation {
 
         if profile.authType == .sshKey,
            let keyPath = profile.keyPath,
-           !trimmed(keyPath).isEmpty,
-           !FileManager.default.fileExists(atPath: keyPath)
+           !trimmed(keyPath).isEmpty
         {
-            return "SSH key file not found at \(keyPath)"
+            if let keyBookmarkData = profile.keyBookmarkData {
+                do {
+                    let access = try SecurityScopedFileAccess.start(
+                        path: keyPath,
+                        bookmarkData: keyBookmarkData,
+                        purpose: "SSH key file"
+                    )
+                    access.stop()
+                } catch {
+                    return error.localizedDescription
+                }
+            } else if !FileManager.default.fileExists(atPath: keyPath) {
+                return "SSH key file not found at \(keyPath)"
+            }
         }
 
         return nil

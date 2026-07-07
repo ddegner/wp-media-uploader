@@ -21,3 +21,5 @@ Package.resolved
 *.dmg
 *.pkg
 output/
+build/
+__pycache__/

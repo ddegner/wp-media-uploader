@@ -235,7 +235,45 @@ struct JobPresentation: Sendable {
     private static func progress(for job: Job, processedFiles: Int) -> Double {
         let total = job.localFiles.count
         guard total > 0 else { return 0 }
-        return Double(processedFiles) / Double(total)
+
+        // Weight each file's contribution by how far through the 4-step
+        // pipeline it has progressed (upload → verify → import → regenerate).
+        // This produces a smoothly advancing bar instead of one that only
+        // jumps when a file fully completes.
+        let stepsPerFile = 4.0
+        let totalSteps = Double(total) * stepsPerFile
+
+        var completedSteps = 0.0
+        for file in job.localFiles {
+            completedSteps += stepWeight(for: file.status)
+        }
+
+        // During an active rsync upload, blend in the per-file transfer
+        // progress so the bar moves even within a single large upload.
+        if job.step == .uploading,
+           let activeFileId = job.activeFileId,
+           let activeFile = job.localFiles.first(where: { $0.id == activeFileId }),
+           activeFile.status == .queued
+        {
+            let alreadyUploaded = Double(job.localFiles.filter {
+                [.uploaded, .verified, .imported, .regenerated, .failed].contains($0.status)
+            }.count)
+            let rsyncFraction = max(0, min(1, job.uploadProgress * Double(total) - alreadyUploaded))
+            completedSteps += rsyncFraction
+        }
+
+        return min(completedSteps / totalSteps, 1.0)
+    }
+
+    private static func stepWeight(for status: FileItemStatus) -> Double {
+        switch status {
+        case .queued:       return 0
+        case .uploaded:     return 1
+        case .verified:     return 2
+        case .imported:     return 3
+        case .regenerated:  return 4
+        case .failed:       return 4
+        }
     }
 
     private static func countFiles(in job: Job, status: FileItemStatus) -> Int {

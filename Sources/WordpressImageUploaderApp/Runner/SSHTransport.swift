@@ -4,10 +4,19 @@ struct SSHAuthContext: Sendable {
     var additionalSSHArgs: [String]
     var environment: [String: String]?
     var askPassScriptURL: URL?
+    var securityScopedAccesses: [SecurityScopedFileAccess] = []
+    var temporaryAskPassAccount: String?
 
     func cleanup() {
-        guard let askPassScriptURL else { return }
-        try? FileManager.default.removeItem(at: askPassScriptURL)
+        if let askPassScriptURL {
+            try? FileManager.default.removeItem(at: askPassScriptURL)
+        }
+        for access in securityScopedAccesses {
+            access.stop()
+        }
+        if let temporaryAskPassAccount {
+            try? KeychainService.deleteSecret(account: temporaryAskPassAccount)
+        }
     }
 }
 
@@ -78,26 +87,46 @@ final class SSHTransport {
         switch profile.authType {
         case .sshKey:
             var args: [String] = []
+            var access: SecurityScopedFileAccess?
             if let keyPath = profile.keyPath,
                !keyPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
-                args += ["-i", keyPath]
+                access = try SecurityScopedFileAccess.start(
+                    path: keyPath,
+                    bookmarkData: profile.keyBookmarkData,
+                    purpose: "SSH key file"
+                )
+                if let access {
+                    args += ["-i", access.url.path]
+                }
             }
 
             if let passphrase = keyPassphrase, !passphrase.isEmpty {
-                let env = try makeAskPassEnv(secret: passphrase)
+                let askPass = try makeAskPassEnv(secret: passphrase)
                 args = ["-o", "BatchMode=no"] + args
-                return SSHAuthContext(additionalSSHArgs: args, environment: env, askPassScriptURL: nil)
+                return SSHAuthContext(
+                    additionalSSHArgs: args,
+                    environment: askPass.environment,
+                    askPassScriptURL: nil,
+                    securityScopedAccesses: [access].compactMap { $0 },
+                    temporaryAskPassAccount: askPass.keychainAccount
+                )
             }
 
             args = ["-o", "BatchMode=yes"] + args
-            return SSHAuthContext(additionalSSHArgs: args, environment: nil, askPassScriptURL: nil)
+            return SSHAuthContext(
+                additionalSSHArgs: args,
+                environment: nil,
+                askPassScriptURL: nil,
+                securityScopedAccesses: [access].compactMap { $0 },
+                temporaryAskPassAccount: nil
+            )
 
         case .password:
             guard let password, !password.isEmpty else {
                 throw JobRunnerError.profileIncomplete(passwordMissingDetail)
             }
-            let env = try makeAskPassEnv(secret: password)
+            let askPass = try makeAskPassEnv(secret: password)
 
             let args = [
                 "-o", "BatchMode=no",
@@ -106,7 +135,12 @@ final class SSHTransport {
                 "-o", "NumberOfPasswordPrompts=1"
             ]
 
-            return SSHAuthContext(additionalSSHArgs: args, environment: env, askPassScriptURL: nil)
+            return SSHAuthContext(
+                additionalSSHArgs: args,
+                environment: askPass.environment,
+                askPassScriptURL: nil,
+                temporaryAskPassAccount: askPass.keychainAccount
+            )
         }
     }
 
@@ -148,14 +182,22 @@ final class SSHTransport {
         profile: ServerProfile,
         auth: SSHAuthContext,
         localFileURL: URL,
+        localFileBookmarkData: Data? = nil,
         remoteTargetPath: String,
         writer: LogWriter?,
         onLine: (@Sendable (CommandOutputStream, String) -> Void)? = nil
     ) async throws {
+        let fileAccess = try SecurityScopedFileAccess.start(
+            url: localFileURL,
+            bookmarkData: localFileBookmarkData,
+            purpose: "Selected upload file"
+        )
+        defer { fileAccess.stop() }
+
         do {
             try await attemptRsyncFile(
                 profile: profile, auth: auth,
-                localFileURL: localFileURL, remoteTargetPath: remoteTargetPath,
+                localFileURL: fileAccess.url, remoteTargetPath: remoteTargetPath,
                 writer: writer, onLine: onLine
             )
         } catch let error as CommandRunnerError {
@@ -170,7 +212,7 @@ final class SSHTransport {
 
             try await attemptRsyncFile(
                 profile: profile, auth: auth,
-                localFileURL: localFileURL, remoteTargetPath: remoteTargetPath,
+                localFileURL: fileAccess.url, remoteTargetPath: remoteTargetPath,
                 writer: writer, onLine: onLine
             )
         }
@@ -416,18 +458,20 @@ final class SSHTransport {
 
     // Use the app binary itself as SSH_ASKPASS. The sandbox blocks exec of dynamically-
     // created shell scripts but always allows exec of signed binaries in the app bundle.
-    // main.swift detects WP_ASKPASS_MODE=1 and prints the secret before SwiftUI starts.
-    private func makeAskPassEnv(secret: String) throws -> [String: String] {
+    // main.swift detects WP_ASKPASS_MODE=1 and reads a temporary Keychain secret before SwiftUI starts.
+    private func makeAskPassEnv(secret: String) throws -> (environment: [String: String], keychainAccount: String) {
         guard let executablePath = Bundle.main.executablePath else {
             throw JobRunnerError.authSetupFailed("Could not locate app binary for SSH authentication")
         }
-        return [
+        let account = "askpass-\(UUID().uuidString)"
+        try KeychainService.setSecret(secret, account: account)
+        return ([
             "SSH_ASKPASS": executablePath,
             "SSH_ASKPASS_REQUIRE": "force",
             "DISPLAY": "1",
             "WP_ASKPASS_MODE": "1",
-            "WP_ASKPASS_SECRET": secret
-        ]
+            "WP_ASKPASS_KEYCHAIN_ACCOUNT": account
+        ], account)
     }
 
     private func askPassDirectories() -> [URL] {

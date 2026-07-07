@@ -52,6 +52,33 @@ final class FileDropHelperTests: XCTestCase {
         XCTAssertEqual(resolved.first?.lastPathComponent, "dup.webp")
     }
 
+    func testSecurityScopedAccessCreatesBookmarkAndFallsBackToPath() throws {
+        let fm = FileManager.default
+        let root = temporaryRoot()
+        let image = root.appendingPathComponent("access.jpg")
+
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data([0x00]).write(to: image)
+        defer { try? fm.removeItem(at: root) }
+
+        let bookmarkData = try SecurityScopedFileAccess.bookmarkData(for: image)
+        let bookmarkedAccess = try SecurityScopedFileAccess.start(
+            url: image,
+            bookmarkData: bookmarkData,
+            purpose: "Selected upload file"
+        )
+        XCTAssertEqual(bookmarkedAccess.url.lastPathComponent, "access.jpg")
+        bookmarkedAccess.stop()
+
+        let pathAccess = try SecurityScopedFileAccess.start(
+            url: image,
+            bookmarkData: nil,
+            purpose: "Selected upload file"
+        )
+        XCTAssertEqual(pathAccess.url.path, image.path)
+        pathAccess.stop()
+    }
+
     private func temporaryRoot() -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("wp-uploader-drop-tests-\(UUID().uuidString)", isDirectory: true)

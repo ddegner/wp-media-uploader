@@ -780,11 +780,9 @@ struct ContentView: View {
                         }
                     }
                     .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-                        Task {
+                        Task { @MainActor in
                             let urls = await loadFileURLs(from: providers)
-                            await MainActor.run {
-                                addFiles(urls)
-                            }
+                            addFiles(urls)
                         }
                         return true
                     }
@@ -1227,7 +1225,8 @@ struct ContentView: View {
         for url in imageFiles {
             let key = url.standardizedFileURL.path
             guard existing.insert(key).inserted else { continue }
-            guard let item = FileItem.fromURL(url) else { continue }
+            let bookmarkData = try? SecurityScopedFileAccess.bookmarkData(for: url)
+            guard let item = FileItem.fromURL(url, bookmarkData: bookmarkData) else { continue }
             droppedFileItems.append(item)
         }
         pruneFileSelection()
@@ -1251,10 +1250,10 @@ struct ContentView: View {
 
     private func startQueuedUpload() {
         guard let profile = selectedProfile else { return }
-        let queued = droppedFileItems.map(\.localURL)
+        let queued = droppedFileItems
         guard !queued.isEmpty else { return }
 
-        jobRunner.start(profile: profile, fileURLs: queued)
+        jobRunner.start(profile: profile, fileItems: queued)
         if jobRunner.isRunning {
             droppedFileItems.removeAll()
             selectedFileRowIDs.removeAll()

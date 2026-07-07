@@ -93,10 +93,21 @@ final class JobRunner {
 
     func start(profile: ServerProfile, fileURLs: [URL]) {
         guard !isRunning else { return }
+        do {
+            let fileItems = try prepareFileItems(urls: fileURLs)
+            start(profile: profile, fileItems: fileItems)
+        } catch {
+            inlineStatusMessage = nil
+            presentBlockingError(error.localizedDescription)
+        }
+    }
+
+    func start(profile: ServerProfile, fileItems: [FileItem]) {
+        guard !isRunning else { return }
         inlineStatusMessage = nil
 
         do {
-            let fileItems = try prepareFileItems(urls: fileURLs)
+            let fileItems = try prepareFileItems(items: fileItems)
             let jobId = UUID()
             let remoteJobDir = "\(ensureNoTrailingSlash(profile.remoteStagingRoot))/\(jobId.uuidString)"
             let logsPath = AppPaths.logsDirectory
@@ -506,6 +517,7 @@ final class JobRunner {
                         profile: profile,
                         auth: auth,
                         localFileURL: current.localURL,
+                        localFileBookmarkData: current.bookmarkData,
                         remoteTargetPath: remoteDir + "/",
                         writer: writer
                     ) { [weak self] stream, line in
@@ -754,27 +766,29 @@ final class JobRunner {
     // MARK: - File preparation & validation
 
     func prepareFileItems(urls: [URL]) throws -> [FileItem] {
-        guard !urls.isEmpty else {
+        let items = urls.compactMap { url -> FileItem? in
+            let bookmarkData = try? SecurityScopedFileAccess.bookmarkData(for: url)
+            return FileItem.fromURL(url, bookmarkData: bookmarkData)
+        }
+        return try prepareFileItems(items: items)
+    }
+
+    private func prepareFileItems(items: [FileItem]) throws -> [FileItem] {
+        guard !items.isEmpty else {
             throw JobRunnerError.missingFiles
         }
 
         var seenPaths = Set<String>()
-        let deduplicated = urls.filter { url in
-            seenPaths.insert(url.standardizedFileURL.path).inserted
+        let deduplicated = items.filter { item in
+            seenPaths.insert(item.localURL.standardizedFileURL.path).inserted
         }
 
-        let supported = deduplicated.filter(isSupportedImageExtension)
+        let supported = deduplicated.filter { isSupportedImageExtension($0.localURL) }
         guard !supported.isEmpty else {
             throw JobRunnerError.unsupportedImages
         }
 
-        let items = supported.compactMap(FileItem.fromURL)
-
-        guard !items.isEmpty else {
-            throw JobRunnerError.unsupportedImages
-        }
-
-        return items
+        return supported
     }
 
     func validateProfile(_ profile: ServerProfile, password: String? = nil) throws {
@@ -841,7 +855,7 @@ final class JobRunner {
             if let fileID, file.id == fileID {
                 return false
             }
-            return [.uploaded, .verified, .imported, .regenerated].contains(file.status)
+            return [.uploaded, .verified, .imported, .regenerated, .failed].contains(file.status)
         }.count
     }
 
@@ -857,11 +871,13 @@ final class JobRunner {
             return
         }
 
+        // Count failed files as complete so progress reaches 100%
+        // when all files have been attempted.
         let uploaded = Double(job.localFiles.filter {
-            [.uploaded, .verified, .imported, .regenerated].contains($0.status)
+            [.uploaded, .verified, .imported, .regenerated, .failed].contains($0.status)
         }.count)
         let imported = Double(job.localFiles.filter {
-            [.imported, .regenerated].contains($0.status)
+            [.imported, .regenerated, .failed].contains($0.status)
         }.count)
 
         mutateJob(id: jobID) { mutable in

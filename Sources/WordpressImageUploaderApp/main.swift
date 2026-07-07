@@ -6,8 +6,13 @@ import SwiftUI
 // We point SSH_ASKPASS at this binary and set WP_ASKPASS_MODE=1.
 // The sandbox allows exec of signed app-bundle binaries; shell scripts are blocked.
 if ProcessInfo.processInfo.environment["WP_ASKPASS_MODE"] == "1" {
-    print(ProcessInfo.processInfo.environment["WP_ASKPASS_SECRET"] ?? "")
-    exit(0)
+    if let account = ProcessInfo.processInfo.environment["WP_ASKPASS_KEYCHAIN_ACCOUNT"],
+       let secret = try? KeychainService.getSecret(account: account)
+    {
+        print(secret)
+        exit(0)
+    }
+    exit(1)
 }
 
 WordpressMediaUploaderApp.main()

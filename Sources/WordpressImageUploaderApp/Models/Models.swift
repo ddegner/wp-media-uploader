@@ -24,6 +24,7 @@ struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
     var username: String
     var authType: AuthenticationType
     var keyPath: String?
+    var keyBookmarkData: Data?
     var keyPassphraseKeychainId: String?
     var passwordKeychainId: String?
     var wpRootPath: String
@@ -39,6 +40,7 @@ struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
         username: "",
         authType: .password,
         keyPath: nil,
+        keyBookmarkData: nil,
         keyPassphraseKeychainId: nil,
         passwordKeychainId: nil,
         wpRootPath: "",
@@ -92,6 +94,7 @@ enum FileItemStatus: String, Codable, CaseIterable, Sendable, Comparable {
 struct FileItem: Identifiable, Codable, Equatable, Sendable {
     var id: UUID
     var localURL: URL
+    var bookmarkData: Data?
     var filename: String
     var sizeBytes: Int64
     var status: FileItemStatus
@@ -99,9 +102,10 @@ struct FileItem: Identifiable, Codable, Equatable, Sendable {
     var importAttachmentId: Int?
     var errorMessage: String?
 
-    init(localURL: URL, filename: String, sizeBytes: Int64) {
+    init(localURL: URL, bookmarkData: Data? = nil, filename: String, sizeBytes: Int64) {
         self.id = UUID()
         self.localURL = localURL
+        self.bookmarkData = bookmarkData
         self.filename = filename
         self.sizeBytes = sizeBytes
         self.status = .queued
@@ -190,14 +194,14 @@ struct Job: Identifiable, Codable, Sendable {
 }
 
 extension FileItem {
-    static func fromURL(_ url: URL) -> FileItem? {
+    static func fromURL(_ url: URL, bookmarkData: Data? = nil) -> FileItem? {
         guard url.isFileURL else { return nil }
         do {
             let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .nameKey])
             guard values.isRegularFile == true else { return nil }
             guard let name = values.name else { return nil }
             let size = Int64(values.fileSize ?? 0)
-            return FileItem(localURL: url, filename: name, sizeBytes: size)
+            return FileItem(localURL: url, bookmarkData: bookmarkData, filename: name, sizeBytes: size)
         } catch {
             return nil
         }

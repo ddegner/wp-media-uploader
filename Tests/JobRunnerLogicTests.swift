@@ -113,6 +113,26 @@ final class JobRunnerLogicTests: XCTestCase {
         XCTAssertEqual(items.first?.localURL.standardizedFileURL.path, fileURL.standardizedFileURL.path)
     }
 
+    @MainActor
+    func testPrepareFileItemsStoresBookmarkDataWhenPossible() throws {
+        let fm = FileManager.default
+        let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("wp-uploader-tests-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = tempRoot.appendingPathComponent("bookmarked.jpg", isDirectory: false)
+
+        try fm.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try Data([0x00, 0x01]).write(to: fileURL)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        let profileStore = ProfileStore()
+        let jobStore = JobStore()
+        let runner = JobRunner(profileStore: profileStore, jobStore: jobStore)
+
+        let items = try runner.prepareFileItems(urls: [fileURL])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertNotNil(items.first?.bookmarkData)
+    }
+
     // MARK: - connection test isolation
 
     @MainActor
