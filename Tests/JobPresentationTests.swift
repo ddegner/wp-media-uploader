@@ -31,8 +31,7 @@ final class JobPresentationTests: XCTestCase {
             for: job,
             activeFileStatus: .uploading,
             now: Date(),
-            anchor: nil,
-            durationFormatter: DateComponentsFormatter()
+            anchor: nil
         )
 
         XCTAssertEqual(presentation.overallProgress, 0.5625, accuracy: 0.0001)

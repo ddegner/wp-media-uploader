@@ -189,7 +189,7 @@ struct Job: Identifiable, Codable, Sendable {
     }
 
     var failedCount: Int {
-        localFiles.filter { $0.status == .failed }.count
+        localFiles.count { $0.status == .failed }
     }
 }
 

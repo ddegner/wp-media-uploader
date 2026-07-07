@@ -4,7 +4,6 @@ final class LogWriter: @unchecked Sendable {
     private static let queueKey = DispatchSpecificKey<Void>()
 
     private let queue = DispatchQueue(label: "WPMediaUploader.LogWriter")
-    private let dateFormatter = ISO8601DateFormatter()
     private var handle: FileHandle?
 
     init(fileURL: URL) {
@@ -44,7 +43,7 @@ final class LogWriter: @unchecked Sendable {
 
     func append(_ line: String) {
         queue.async { [self] in
-            let timestamp = self.dateFormatter.string(from: Date())
+            let timestamp = Date.now.formatted(.iso8601)
             let payload = "[\(timestamp)] \(line)\n"
             guard let data = payload.data(using: .utf8) else { return }
 

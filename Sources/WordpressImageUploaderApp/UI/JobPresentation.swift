@@ -165,21 +165,26 @@ struct JobPresentation: Sendable {
     let overallProgress: Double
 
     static func processedFileCount(in job: Job) -> Int {
-        job.localFiles.filter { item in
+        job.localFiles.count { item in
             item.status == .regenerated || item.status == .failed
-        }.count
+        }
     }
+
+    private static let etaFormatStyle = Duration.UnitsFormatStyle.units(
+        allowed: [.hours, .minutes],
+        width: .narrow,
+        maximumUnitCount: 2
+    )
 
     static func make(
         for job: Job,
         activeFileStatus: FileRowStatus?,
         now: Date,
-        anchor: JobRuntimeAnchor?,
-        durationFormatter: DateComponentsFormatter
+        anchor: JobRuntimeAnchor?
     ) -> JobPresentation {
         let totalFiles = job.localFiles.count
         let processedFiles = processedFileCount(in: job)
-        let successfulFiles = job.localFiles.filter { $0.status == .regenerated }.count
+        let successfulFiles = job.localFiles.count { $0.status == .regenerated }
         let failedFiles = job.failedCount
         let remainingFiles = max(totalFiles - processedFiles, 0)
         let queuedFiles = countFiles(in: job, status: .queued)
@@ -194,24 +199,22 @@ struct JobPresentation: Sendable {
             anchor: anchor
         )
 
-        let etaLine: String
-        if job.step.isTerminal {
-            etaLine = "Complete"
+        let etaLine: String = if job.step.isTerminal {
+            "Complete"
         } else if let runtimeEstimate {
             if runtimeEstimate.secondsRemaining < 60 {
-                etaLine = "<1 min"
+                "<1 min"
             } else {
-                etaLine = durationFormatter.string(from: runtimeEstimate.secondsRemaining) ?? "Estimating..."
+                Duration.seconds(runtimeEstimate.secondsRemaining).formatted(etaFormatStyle)
             }
         } else {
-            etaLine = "Estimating..."
+            "Estimating..."
         }
 
-        let rateLine: String
-        if let runtimeEstimate {
-            rateLine = String(format: "%.1f files/min", runtimeEstimate.filesPerMinute)
+        let rateLine: String = if let runtimeEstimate {
+            String(format: "%.1f files/min", runtimeEstimate.filesPerMinute)
         } else {
-            rateLine = job.step.isTerminal ? "n/a" : "Estimating..."
+            job.step.isTerminal ? "n/a" : "Estimating..."
         }
 
         return JobPresentation(
@@ -255,9 +258,9 @@ struct JobPresentation: Sendable {
            let activeFile = job.localFiles.first(where: { $0.id == activeFileId }),
            activeFile.status == .queued
         {
-            let alreadyUploaded = Double(job.localFiles.filter {
+            let alreadyUploaded = Double(job.localFiles.count {
                 [.uploaded, .verified, .imported, .regenerated, .failed].contains($0.status)
-            }.count)
+            })
             let rsyncFraction = max(0, min(1, job.uploadProgress * Double(total) - alreadyUploaded))
             completedSteps += rsyncFraction
         }
@@ -277,7 +280,7 @@ struct JobPresentation: Sendable {
     }
 
     private static func countFiles(in job: Job, status: FileItemStatus) -> Int {
-        job.localFiles.filter { $0.status == status }.count
+        job.localFiles.count { $0.status == status }
     }
 
     private static func statusLine(for job: Job, processedFiles: Int, activeFileStatus: FileRowStatus?) -> String {

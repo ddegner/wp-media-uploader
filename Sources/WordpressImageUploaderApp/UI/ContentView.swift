@@ -153,7 +153,7 @@ struct ContentView: View {
     @Bindable var jobRunner: JobRunner
     @Bindable var externalFileIntake: ExternalFileIntake
 
-    @Environment(\.controlActiveState) private var controlActiveState
+    @Environment(\.appearsActive) private var appearsActive
 
     @State private var droppedFileItems: [FileItem] = []
     @State private var isDropTargeted = false
@@ -325,8 +325,8 @@ struct ContentView: View {
             .onChange(of: externalFileIntake.sequence) { _, _ in
                 ingestExternalFilesIfPreferredWindow()
             }
-            .onChange(of: controlActiveState) { _, state in
-                guard state == .key else { return }
+            .onChange(of: appearsActive) { _, isActive in
+                guard isActive else { return }
                 ingestExternalFiles()
             }
             .onChange(of: jobRunner.isRunning) { _, running in
@@ -758,7 +758,7 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .disabled(jobRunner.isRunning)
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: false))
+                .listStyle(.inset)
                 .scrollContentBackground(.hidden)
             }
         }
@@ -823,7 +823,7 @@ struct ContentView: View {
                 moveQueuedFiles(from: source, to: destination)
             }
         }
-        .listStyle(.inset(alternatesRowBackgrounds: false))
+        .listStyle(.inset)
         .scrollContentBackground(.hidden)
         .background(Self.editorBackground)
         .overlay {
@@ -954,7 +954,7 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .lineLimit(1)
             Spacer()
-            Text(Self.byteFormatter.string(fromByteCount: item.sizeBytes))
+            Text(item.sizeBytes.formatted(.byteCount(style: .file, allowedUnits: [.kb, .mb])))
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
             perItemIndicator(for: file, rowStatus: rowStatus, in: job)
@@ -1025,14 +1025,10 @@ struct ContentView: View {
 
     private func rowStatusColor(_ status: FileRowStatus) -> Color {
         switch status.tone {
-        case .failure:
-            return .red
-        case .success:
-            return .green
-        case .progress:
-            return .blue
-        case .secondary:
-            return .secondary
+        case .failure: .red
+        case .success: .green
+        case .progress: .blue
+        case .secondary: .secondary
         }
     }
 
@@ -1042,8 +1038,7 @@ struct ContentView: View {
             for: job,
             activeFileStatus: activeFileStatus(for: job),
             now: Date(),
-            anchor: runtimeAnchors[job.id],
-            durationFormatter: Self.durationFormatter
+            anchor: runtimeAnchors[job.id]
         )
 
         return Form {
@@ -1237,7 +1232,7 @@ struct ContentView: View {
     }
 
     private func ingestExternalFilesIfPreferredWindow() {
-        guard controlActiveState == .key else { return }
+        guard appearsActive else { return }
         ingestExternalFiles()
     }
 
@@ -1363,10 +1358,10 @@ struct ContentView: View {
 
     private func statusColor(_ status: FileItemStatus) -> Color {
         switch status {
-        case .failed: return .red
-        case .regenerated: return .green
-        case .imported, .verified, .uploaded: return .blue
-        case .queued: return .secondary
+        case .failed: .red
+        case .regenerated: .green
+        case .imported, .verified, .uploaded: .blue
+        case .queued: .secondary
         }
     }
 
@@ -1384,22 +1379,22 @@ struct ContentView: View {
 
     private func stepColor(_ step: JobStep) -> Color {
         switch step {
-        case .finished: return .green
-        case .failed, .cancelled: return .red
-        default: return .accentColor
+        case .finished: .green
+        case .failed, .cancelled: .red
+        default: .accentColor
         }
     }
 
     private func stepIcon(_ step: JobStep) -> String {
         switch step {
-        case .preflight: return "network"
-        case .uploading: return "arrow.up.circle"
-        case .verifying: return "checkmark.shield"
-        case .importing: return "square.and.arrow.down"
-        case .regenerating: return "arrow.triangle.2.circlepath"
-        case .finished: return "checkmark.circle.fill"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .cancelled: return "xmark.circle"
+        case .preflight: "network"
+        case .uploading: "arrow.up.circle"
+        case .verifying: "checkmark.shield"
+        case .importing: "square.and.arrow.down"
+        case .regenerating: "arrow.triangle.2.circlepath"
+        case .finished: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        case .cancelled: "xmark.circle"
         }
     }
 
@@ -1418,19 +1413,4 @@ struct ContentView: View {
     }
 
 
-    private static let byteFormatter: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB]
-        formatter.countStyle = .file
-        return formatter
-    }()
-
-    private static let durationFormatter: DateComponentsFormatter = {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute]
-        formatter.unitsStyle = .abbreviated
-        formatter.maximumUnitCount = 2
-        formatter.zeroFormattingBehavior = .dropAll
-        return formatter
-    }()
 }

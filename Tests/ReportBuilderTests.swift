@@ -40,6 +40,23 @@ final class ReportBuilderTests: XCTestCase {
         XCTAssertTrue(json.contains("\"attachmentId\" : 42"))
     }
 
+    func testJSONReportCreatedAtIsISO8601UTC() throws {
+        let job = Job(
+            profileId: UUID(),
+            remoteJobDir: "/tmp/job",
+            files: [],
+            logsPath: "/tmp/log.txt"
+        )
+
+        let json = try ReportBuilder.jsonReport(for: job)
+        // Pin the timestamp shape so report format stays compatible:
+        // "createdAt" : "2026-07-07T21:30:00Z"
+        XCTAssertNotNil(
+            json.firstMatch(of: /"createdAt" : "\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"/),
+            "Unexpected createdAt format in: \(json)"
+        )
+    }
+
     func testTextReportContainsFileStatus() {
         var file = FileItem(localURL: URL(fileURLWithPath: "/tmp/a.jpg"), filename: "a.jpg", sizeBytes: 10)
         file.status = .imported

@@ -67,7 +67,7 @@ enum ReportBuilder {
         let report = JobReport(
             jobId: job.id.uuidString,
             profileId: job.profileId.uuidString,
-            createdAt: ISO8601DateFormatter().string(from: job.createdAt),
+            createdAt: job.createdAt.formatted(.iso8601),
             status: job.step.rawValue,
             remoteJobDir: job.remoteJobDir,
             logPath: job.logsPath,
