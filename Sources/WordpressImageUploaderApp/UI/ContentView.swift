@@ -1,4 +1,5 @@
 import AppKit
+import QuickLook
 import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
@@ -94,11 +95,11 @@ private struct FileThumbnailIcon: View {
 }
 
 struct ContentView: View {
+    private static let profilesDrawerMinWidth: CGFloat = 200
     private static let profilesDrawerWidth: CGFloat = 260
+    private static let profilesDrawerMaxWidth: CGFloat = 340
     private static let workbenchMinWidth: CGFloat = 180
     private static let visibleLogLineLimit = 300
-
-    private static let editorBackground = Color(nsColor: .textBackgroundColor)
 
     private struct ProfileEditorDraft: Identifiable {
         let id: UUID
@@ -169,6 +170,9 @@ struct ContentView: View {
     @State private var profilePendingDeletion: ServerProfile?
     @State private var showResetConfirmation = false
     @State private var showClearHistoryConfirmation = false
+    @State private var quickLookURL: URL?
+    @State private var quickLookURLs: [URL] = []
+    @State private var quickLookAccessTokens: [SecurityScopedFileAccess] = []
 
 
     private var selectedProfile: ServerProfile? {
@@ -210,7 +214,7 @@ struct ContentView: View {
     }
 
     private var minimumWindowWidth: CGFloat {
-        (isProfilesDrawerVisible ? Self.profilesDrawerWidth : 0) + Self.workbenchMinWidth
+        (isProfilesDrawerVisible ? Self.profilesDrawerMinWidth : 0) + Self.workbenchMinWidth
     }
 
     var body: some View {
@@ -294,7 +298,6 @@ struct ContentView: View {
     private var workspacePresentationLayer: some View {
         workspaceLifecycleLayer
             .frame(minWidth: minimumWindowWidth, minHeight: 600)
-            .background(Self.editorBackground)
             .focusedSceneValue(\.showProfilesDrawerBinding, profilesDrawerSceneBinding)
             .focusedSceneValue(\.showOperationsDrawerBinding, operationsDrawerSceneBinding)
             .focusedSceneValue(\.windowCommandActions, windowCommandActions)
@@ -358,14 +361,13 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $splitViewVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(
-                    min: Self.profilesDrawerWidth,
+                    min: Self.profilesDrawerMinWidth,
                     ideal: Self.profilesDrawerWidth,
-                    max: Self.profilesDrawerWidth
+                    max: Self.profilesDrawerMaxWidth
                 )
         } detail: {
             middleWorkbench
                 .frame(minWidth: Self.workbenchMinWidth, maxWidth: .infinity)
-                .background(Self.editorBackground)
                 .toolbar {
                     middleToolbarItems()
                 }
@@ -385,40 +387,46 @@ struct ContentView: View {
             ForEach(profileStore.profiles) { profile in
                 profileSidebarRow(profile)
                     .tag(profile.id)
-                    .contextMenu {
-                        Button("Edit Profile…") {
-                            presentProfileEditor(for: profile)
-                        }
-
-                        Menu("Color") {
-                            Button {
-                                setProfileColor(nil, for: profile)
-                            } label: {
-                                Label("None", systemImage: profile.profileColorHex == nil ? "checkmark" : "circle.slash")
-                            }
-
-                            Divider()
-
-                            ForEach(ProfileColor.presets) { preset in
-                                Button {
-                                    setProfileColor(preset.hex, for: profile)
-                                } label: {
-                                    Label(preset.name, systemImage: profile.profileColorHex == preset.hex ? "checkmark.circle.fill" : "circle.fill")
-                                }
-                                .tint(Color(hexString: preset.hex))
-                            }
-                        }
-
-                        Divider()
-
-                        Button("Delete Profile", role: .destructive) {
-                            deleteProfile(profile)
-                        }
-                        .disabled(!canDeleteProfile)
-                    }
             }
         }
         .listStyle(.sidebar)
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            if let profile = profile(forSelection: ids) {
+                Button("Edit Profile…") {
+                    presentProfileEditor(for: profile)
+                }
+
+                Menu("Color") {
+                    Button {
+                        setProfileColor(nil, for: profile)
+                    } label: {
+                        Label("None", systemImage: profile.profileColorHex == nil ? "checkmark" : "circle.slash")
+                    }
+
+                    Divider()
+
+                    ForEach(ProfileColor.presets) { preset in
+                        Button {
+                            setProfileColor(preset.hex, for: profile)
+                        } label: {
+                            Label(preset.name, systemImage: profile.profileColorHex == preset.hex ? "checkmark.circle.fill" : "circle.fill")
+                        }
+                        .tint(Color(hexString: preset.hex))
+                    }
+                }
+
+                Divider()
+
+                Button("Delete Profile", role: .destructive) {
+                    deleteProfile(profile)
+                }
+                .disabled(jobRunner.isRunning)
+            }
+        } primaryAction: { ids in
+            if let profile = profile(forSelection: ids) {
+                presentProfileEditor(for: profile)
+            }
+        }
         .environment(\.defaultMinListRowHeight, 30)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
@@ -504,7 +512,6 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Self.editorBackground)
     }
 
     @ToolbarContentBuilder
@@ -531,7 +538,11 @@ struct ContentView: View {
             .disabled(!canResetAction)
             .help("Reset queued files and clear the current job")
             .accessibilityLabel("Reset queued files and clear the current job")
+        }
 
+        ToolbarSpacer(.fixed)
+
+        ToolbarItemGroup(placement: .automatic) {
             Button {
                 guard let profile = retryProfile else { return }
                 jobRunner.retryFailed(profile: profile)
@@ -779,12 +790,11 @@ struct ContentView: View {
                                 .padding(8)
                         }
                     }
-                    .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-                        Task { @MainActor in
-                            let urls = await loadFileURLs(from: providers)
-                            addFiles(urls)
-                        }
+                    .dropDestination(for: URL.self) { droppedURLs, _ in
+                        addFiles(droppedURLs)
                         return true
+                    } isTargeted: {
+                        isDropTargeted = $0
                     }
                     .onDeleteCommand {
                         deleteSelectedFileRows()
@@ -811,12 +821,6 @@ struct ContentView: View {
                 let file = DisplayFile(source: .queued, item: item)
                 fileRow(for: file, job: job)
                     .tag(file.id)
-                    .contextMenu {
-                        Button("Delete") {
-                            deleteFileRows(targeting: file)
-                        }
-                        .disabled(jobRunner.isRunning)
-                    }
             }
             .onMove { source, destination in
                 guard !jobRunner.isRunning else { return }
@@ -824,8 +828,45 @@ struct ContentView: View {
             }
         }
         .listStyle(.inset)
-        .scrollContentBackground(.hidden)
-        .background(Self.editorBackground)
+        .dragContainer(for: URL.self, itemID: \.self) { draggedItemIDs in
+            draggedItemIDs
+        }
+        .dragContainerSelection(urls(forRowIDs: selectedFileRowIDs))
+        .copyable(urls(forRowIDs: selectedFileRowIDs))
+        .pasteDestination(for: URL.self) { addFiles($0) }
+        .contextMenu(forSelectionType: String.self) { rowIDs in
+            if rowIDs.isEmpty {
+                Button("Add Files…") {
+                    choosePhotos()
+                }
+            } else {
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(urls(forRowIDs: rowIDs))
+                }
+                Button("Quick Look") {
+                    presentQuickLook(forRowIDs: rowIDs)
+                }
+                Divider()
+                Button("Delete", role: .destructive) {
+                    deleteQueuedFiles(forRowIDs: rowIDs)
+                }
+                .disabled(jobRunner.isRunning || !rowIDs.contains(where: DisplayFile.isQueuedRowID))
+            }
+        }
+        .quickLookPreview($quickLookURL, in: quickLookURLs)
+        .onKeyPress(.space) {
+            guard !selectedFileRowIDs.isEmpty else { return .ignored }
+            presentQuickLook(forRowIDs: selectedFileRowIDs)
+            return .handled
+        }
+        .onChange(of: quickLookURL) { _, newValue in
+            guard newValue == nil else { return }
+            for token in quickLookAccessTokens {
+                token.stop()
+            }
+            quickLookAccessTokens = []
+            quickLookURLs = []
+        }
         .overlay {
             if isEmpty {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -972,6 +1013,7 @@ struct ContentView: View {
             )
         )
         .contentShape(Rectangle())
+        .draggable(URL.self, id: \.self, item: item.localURL)
     }
 
     private func perItemIndicator(for file: DisplayFile, rowStatus: FileRowStatus, in job: Job?) -> some View {
@@ -1180,6 +1222,11 @@ struct ContentView: View {
         jobRunner.clearJobHistory()
     }
 
+    private func profile(forSelection ids: Set<UUID>) -> ServerProfile? {
+        guard let id = ids.first else { return nil }
+        return profileStore.profiles.first { $0.id == id }
+    }
+
     private func presentProfileEditor(for profile: ServerProfile) {
         profileEditorDraft = ProfileEditorDraft(
             profile: profile,
@@ -1264,17 +1311,45 @@ struct ContentView: View {
         deleteQueuedFiles(forRowIDs: selectedFileRowIDs)
     }
 
-    private func deleteFileRows(targeting file: DisplayFile) {
-        guard !jobRunner.isRunning else { return }
-        guard file.source == .queued else { return }
-
-        let targetRowIDs: Set<String>
-        if selectedFileRowIDs.contains(file.id) {
-            targetRowIDs = selectedFileRowIDs
-        } else {
-            targetRowIDs = [file.id]
+    private func fileItems(forRowIDs rowIDs: Set<String>) -> [FileItem] {
+        var items: [FileItem] = []
+        if let job = jobRunner.currentJob {
+            items.append(contentsOf: job.localFiles.filter { item in
+                rowIDs.contains(DisplayFile.currentJobRowID(for: item.id))
+            })
         }
-        deleteQueuedFiles(forRowIDs: targetRowIDs)
+        items.append(contentsOf: droppedFileItems.filter { item in
+            rowIDs.contains(DisplayFile.queuedRowID(for: item.id))
+        })
+        return items
+    }
+
+    private func urls(forRowIDs rowIDs: Set<String>) -> [URL] {
+        fileItems(forRowIDs: rowIDs).map(\.localURL)
+    }
+
+    private func presentQuickLook(forRowIDs rowIDs: Set<String>) {
+        let items = fileItems(forRowIDs: rowIDs)
+        guard !items.isEmpty else { return }
+
+        // Files restored from job history need their security-scoped access
+        // re-established from bookmarks before Quick Look can read them.
+        var tokens: [SecurityScopedFileAccess] = []
+        var previewURLs: [URL] = []
+        for item in items {
+            guard let access = try? SecurityScopedFileAccess.start(
+                url: item.localURL,
+                bookmarkData: item.bookmarkData,
+                purpose: "Quick Look preview"
+            ) else { continue }
+            tokens.append(access)
+            previewURLs.append(access.url)
+        }
+        guard !previewURLs.isEmpty else { return }
+
+        quickLookAccessTokens = tokens
+        quickLookURLs = previewURLs
+        quickLookURL = previewURLs.first
     }
 
     private func moveQueuedFiles(from source: IndexSet, to destination: Int) {

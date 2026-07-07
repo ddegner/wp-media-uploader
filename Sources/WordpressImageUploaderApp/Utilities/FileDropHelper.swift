@@ -2,19 +2,6 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-@MainActor
-func loadFileURLs(from providers: [NSItemProvider]) async -> [URL] {
-    var urls: [URL] = []
-
-    for provider in providers {
-        if let url = await loadSingleURL(from: provider) {
-            urls.append(url)
-        }
-    }
-
-    return urls
-}
-
 func resolveImageFileURLs(from urls: [URL]) -> [URL] {
     var collected: [URL] = []
 
@@ -31,28 +18,6 @@ func resolveImageFileURLs(from urls: [URL]) -> [URL] {
         }
     }
     return uniqueURLs
-}
-
-@MainActor
-private func loadSingleURL(from provider: NSItemProvider) async -> URL? {
-    let typeIdentifier = UTType.fileURL.identifier
-
-    guard provider.hasItemConformingToTypeIdentifier(typeIdentifier) else {
-        return nil
-    }
-
-    return await withCheckedContinuation { continuation in
-        provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
-            guard let data,
-                  let url = URL(dataRepresentation: data, relativeTo: nil)
-            else {
-                continuation.resume(returning: nil)
-                return
-            }
-
-            continuation.resume(returning: url)
-        }
-    }
 }
 
 private func imageFiles(from url: URL) -> [URL] {

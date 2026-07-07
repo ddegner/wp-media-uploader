@@ -140,8 +140,6 @@ struct WordpressMediaUploaderApp: App {
                 JobRunner.requestCompletionNotificationAuthorizationIfNeeded()
             }
         }
-        .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
         .defaultSize(width: WorkspaceLayoutState.defaultWindowSize.width, height: WorkspaceLayoutState.defaultWindowSize.height)
         .commands {
