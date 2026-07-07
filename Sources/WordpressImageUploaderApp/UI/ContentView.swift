@@ -191,8 +191,8 @@ struct ContentView: View {
     @State private var showJobStoreErrorAlert = false
     @State private var selectedProfileId: UUID?
     @State private var runtimeAnchors: [UUID: JobRuntimeAnchor] = [:]
-    @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
-    @State private var rightPane: WorkspaceOperationsTab? = .activeJob
+    @State private var splitViewVisibility = WorkspaceLayoutState.initialSplitVisibility()
+    @State private var rightPane = WorkspaceLayoutState.initialOperationsPane()
     @State private var profilePendingDeletion: ServerProfile?
     @State private var showResetConfirmation = false
     @State private var showClearHistoryConfirmation = false
@@ -336,24 +336,26 @@ struct ContentView: View {
     private var workspaceLifecycleLayer: some View {
         workspaceContainer
             .onAppear {
-                let defaults = UserDefaults.standard
-                let showProfiles = defaults.object(forKey: WorkspaceLayoutState.showProfilesDrawerKey) as? Bool ?? true
-                splitViewVisibility = WorkspaceLayoutState.splitVisibility(forProfilesDrawer: showProfiles)
-                let showOps = defaults.object(forKey: WorkspaceLayoutState.showOperationsDrawerKey) as? Bool ?? true
-                if showOps {
-                    let tabRaw = defaults.string(forKey: WorkspaceLayoutState.operationsTabKey) ?? ""
-                    rightPane = WorkspaceOperationsTab(rawValue: tabRaw) ?? .activeJob
-                } else {
-                    rightPane = nil
-                }
+                // Drawer state is seeded from persisted defaults at @State
+                // initialization; re-applying it here would revert live drawer
+                // changes whenever the system reparents the content and
+                // onAppear fires again.
                 ingestExternalFilesIfPreferredWindow()
                 seedRuntimeAnchorForActiveJob(force: true)
                 if selectedProfileId == nil {
                     selectedProfileId = profileStore.profiles.first?.id
                 }
-                if profileStore.isEmpty {
+                if profileStore.isEmpty, profileEditorDraft == nil {
                     presentNewProfileEditor()
                 }
+            }
+            .onChange(of: splitViewVisibility) { _, newValue in
+                // The window toolbar's native sidebar toggle writes the
+                // binding directly, so persist here to cover every path.
+                UserDefaults.standard.set(
+                    WorkspaceLayoutState.profilesDrawerVisible(for: newValue),
+                    forKey: WorkspaceLayoutState.showProfilesDrawerKey
+                )
             }
             .onChange(of: externalFileIntake.sequence) { _, _ in
                 ingestExternalFilesIfPreferredWindow()

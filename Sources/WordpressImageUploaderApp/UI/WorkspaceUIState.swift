@@ -39,6 +39,19 @@ enum WorkspaceLayoutState {
         WorkspaceOperationsTab(rawValue: rawValue) ?? defaultOperationsTab
     }
 
+    // Initial state read at view construction so drawers start in their
+    // persisted positions instead of flashing open and animating closed.
+    static func initialSplitVisibility(defaults: UserDefaults = .standard) -> NavigationSplitViewVisibility {
+        let show = defaults.object(forKey: showProfilesDrawerKey) as? Bool ?? defaultShowProfilesDrawer
+        return splitVisibility(forProfilesDrawer: show)
+    }
+
+    static func initialOperationsPane(defaults: UserDefaults = .standard) -> WorkspaceOperationsTab? {
+        let show = defaults.object(forKey: showOperationsDrawerKey) as? Bool ?? defaultShowOperationsDrawer
+        guard show else { return nil }
+        return restoredOperationsTab(from: defaults.string(forKey: operationsTabKey) ?? "")
+    }
+
     static func splitVisibility(forProfilesDrawer isVisible: Bool) -> NavigationSplitViewVisibility {
         isVisible ? .all : .detailOnly
     }

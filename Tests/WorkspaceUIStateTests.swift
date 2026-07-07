@@ -24,6 +24,23 @@ final class WorkspaceUIStateTests: XCTestCase {
         XCTAssertFalse(WorkspaceLayoutState.profilesDrawerVisible(for: .detailOnly))
     }
 
+    func testInitialStateReadsPersistedDrawerValues() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkspaceUIStateTests-\(UUID().uuidString)"))
+
+        // Unset keys fall back to defaults: both drawers visible, activeJob tab.
+        XCTAssertEqual(WorkspaceLayoutState.initialSplitVisibility(defaults: defaults), .all)
+        XCTAssertEqual(WorkspaceLayoutState.initialOperationsPane(defaults: defaults), .activeJob)
+
+        defaults.set(false, forKey: WorkspaceLayoutState.showProfilesDrawerKey)
+        defaults.set(true, forKey: WorkspaceLayoutState.showOperationsDrawerKey)
+        defaults.set("terminal", forKey: WorkspaceLayoutState.operationsTabKey)
+        XCTAssertEqual(WorkspaceLayoutState.initialSplitVisibility(defaults: defaults), .detailOnly)
+        XCTAssertEqual(WorkspaceLayoutState.initialOperationsPane(defaults: defaults), .terminal)
+
+        defaults.set(false, forKey: WorkspaceLayoutState.showOperationsDrawerKey)
+        XCTAssertNil(WorkspaceLayoutState.initialOperationsPane(defaults: defaults))
+    }
+
     func testCanStartUploadRequiresIdleProfileAndQueue() {
         XCTAssertTrue(WorkspaceCommandState.canStartUpload(isRunning: false, hasSelectedProfile: true, queuedCount: 1))
         XCTAssertFalse(WorkspaceCommandState.canStartUpload(isRunning: true, hasSelectedProfile: true, queuedCount: 1))
