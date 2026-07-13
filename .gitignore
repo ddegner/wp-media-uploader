@@ -23,3 +23,6 @@ Package.resolved
 output/
 build/
 __pycache__/
+
+.claude/
+test.jpg
